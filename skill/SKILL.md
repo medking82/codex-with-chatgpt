@@ -72,8 +72,10 @@ whatever data it needs by itself.
    Each workspace also has exactly ONE ChatGPT connector. Do not create a
    second connector for the same workspace. Other workspaces may have their
    own connectors — never edit those.
-7. After first-time setup, never ask the user to approve writing C2C's local
-   settings directory. Run `c2c sandbox-allow --json` (idempotent). If it fails
+7. Run `c2c sandbox-allow --json` only during authorized first-time setup or
+   when a diagnosed state-directory permission failure requires that repair.
+   Do not rewrite Codex configuration on every planning/review invocation.
+   Within that authorized scope, do not ask again for the same write. If it fails
    with EPERM / Operation not permitted, request elevated permissions and retry
    ONCE. After `{ "alreadyAllowed": true }` or `{ "added": true }`, stay silent.
 8. ChatGPT pages: only the URLs in **In-app browser (ChatGPT)**. Never start
@@ -186,8 +188,9 @@ that close the tab, hide the window, or stall on the settings page.
 - CLI: let `<checkout>` mean the path on the previous line; run
   `node "<checkout>/bin/c2c.js" <command>` (or `c2c <command>` if globally linked).
   All commands support `--json` for parsing.
-- If the checkout has no `node_modules` or no `dist/`, first run
-  `corepack pnpm install && corepack pnpm build` inside it.
+- If the checkout has no `node_modules` or no `dist/`, install/build only as part
+  of authorized setup or maintenance. An ordinary planning/review request does
+  not authorize dependency installation; report the missing prerequisite.
 - For commands that act on the user's project (`setup`, `doctor`, `session`,
   `restart`, `start`, `stop`, `status`, `pair`, `unpair`, `logs`, `workspace`,
   `record`, `tunnel status`, `tunnel choose`), pass `-w <workspace root>`
@@ -196,34 +199,31 @@ that close the tab, hide the window, or stall on the settings page.
   `prefs`, `tunnel login`. They still accept and ignore `-w`, so a leftover
   flag must not fail the command.
 
-## Daily update check
+## Update checks and maintenance scope
 
-At the START of every workflow below (before anything else), run these two
-commands (both are cheap / cached; never mention them unless an update exists):
+Reuse current update evidence when available. `c2c update-check --json` (without
+`-w`) is an optional version check; it may refresh its local cache. It does not
+authorize an upgrade. Ordinary planning/review does not run install/build,
+rewrite sandbox configuration, stash local edits, or restart a healthy bridge
+because a newer version exists. Mention an available update briefly and continue
+the requested task; run the update workflow only when maintenance is authorized.
 
-1. `c2c update-check --json` (do not pass `-w`)
-2. `c2c sandbox-allow --json` (do not pass `-w`) — writes the C2C state directory into Codex's
-   sandbox `writable_roots` (macOS: `~/Library/Application Support/codex-with-chatgpt`;
-   Windows: `%LOCALAPPDATA%\codex-with-chatgpt`; config file is
-   `<codex-home>/config.toml`; see **Locations**).
-   If already allowlisted, this is a no-op and does not trigger elevation.
-
-- `{ "updateAvailable": false }` → continue silently. Never mention the check.
-- `{ "updateAvailable": true }` → tell the user one line:
-  "检测到 Codex with ChatGPT 有新版本，我先更新一下（约 1 分钟），随后继续你的任务。"
-  Then run the update workflow below, and CONTINUE the original task afterwards.
-
-## Workflow: update（"更新 Codex with ChatGPT"，or triggered by the daily check）
+## Workflow: update（explicitly authorized maintenance, e.g. "更新 Codex with ChatGPT"）
 
 Inside the checkout directory (see Locations):
 
-1. `git pull --ff-only` (if it fails due to local edits: `git stash && git pull --ff-only`).
+1. Inspect `git status --short` first. If local edits exist, preserve them and
+   report the update blocker; do not automatically stash, reset, or overwrite
+   them. With a clean checkout, run `git pull --ff-only`. If it fails, report the
+   cause rather than forcing synchronization.
 2. `corepack pnpm install && corepack pnpm build`.
 3. Re-install the Skill: copy `skill/SKILL.md` to
    `<codex-home>/skills/codex-with-chatgpt/SKILL.md`, then fix the "checkout lives at:"
    line in the copy to the actual checkout path.
-4. `c2c sandbox-allow --json` (so existing installs pick up the sandbox allowlist),
-   then `c2c restart -w <workspace>` so the bridge runs the new code, then
+4. Run `c2c sandbox-allow --json` only if authorized setup or a diagnosed
+   permission failure requires it (Golden rule 7). Restart an existing affected
+   bridge with `c2c restart -w <workspace>` so it runs the new code; do not start
+   a bridge for an unrelated workspace. Then
    `c2c update-check --force --json` to refresh the cache (should now report up to date).
 5. Tell the user "✓ 已更新到最新版本" — then resume whatever task triggered this.
    (The updated SKILL.md takes effect from the next Codex session; that's expected.)
@@ -306,12 +306,24 @@ Speak only of 临时地址 / 固定域名 / 登录 Cloudflare.
    (Project collection for a new workspace; `https://chatgpt.com/` only
    in long-chat). Confirm Chat mode per **In-app browser** §7 (if it is Work,
    open a new Chat conversation instead). Send the boot prompt from
-   `docs/protocol.md` §Boot Prompt, then (same chat) send:
-   `Use the "<connectorName>" connector: call workspace_info and read hello-style top-level file. Reply with the workspace name.`
-   Confirm the reply matches `workspaceName` (wait per **In-app browser** §8).
-   Only then save the chat URL with `c2c session set` (see Conversation
-   management). If the name does not match, do not save. markDeliverable.
-7. Report to the user exactly in this shape (no internals):
+   `docs/protocol.md` §Boot Prompt, then prepare the verification request for
+   that same chat:
+   Choose an existing non-sensitive text file in the target workspace. Read it
+   locally, retain a distinctive non-secret content marker and its exact line
+   range, and substitute its exact workspace-relative filename and range below.
+   Do not create a probe file or send the expected marker in the prompt:
+   `Use the "<connectorName>" connector: call workspace_info, then read_file with path="<exact-file>", start_line=<start>, end_line=<end>. Reply with the workspace identity, returned file path, and actual content from those lines.`
+   Wait per **In-app browser** §8. Require evidence of both successful tool
+   calls: workspace_info must match the target workspace identity (including
+   `workspaceName`), and read_file must return the selected path/range with the
+   locally retained content marker. A workspace-name reply alone is insufficient.
+   Missing/denied tool access, missing file, identity/content mismatch, or absent
+   tool evidence fails verification. Do not save the chat URL or claim a passed
+   file-read test; report the blocker and diagnose before retrying. Only after
+   both checks pass save the chat URL with `c2c session set` (see Conversation
+   management), then markDeliverable.
+7. Report this shape only after step 6 passes (no internals). On failure, report
+   the actual incomplete verification instead of the success checklist:
 
 ```
 Codex with ChatGPT
@@ -746,7 +758,7 @@ the previous public address is gone. Doctor already started a new one.
 | Pairing code rejected/expired | `c2c pair --json` for a fresh code |
 | Same explicit ChatGPT setup/reconnect browser configuration step fails twice after repair | Stop automating ChatGPT settings and use **Guided manual ChatGPT setup fallback**. Do not count browser/js timeout, loading/generating, or login/2FA waiting as failures. |
 | Port conflict | handled automatically; never surface to the user |
-| Every new chat “repairs” / cannot write the log or settings directory | `c2c sandbox-allow --json` (once). Do not ask the user. |
-| cloudflared missing | install it yourself (brew/winget), then retry |
+| Cannot write the log or settings directory | Diagnose the permission failure first; if required, run `c2c sandbox-allow --json` within authorized repair scope (Golden rule 7). |
+| cloudflared missing | Install it during authorized setup or maintenance (brew/winget), then retry; otherwise report the missing prerequisite. |
 | Sidebar has no「项目」 | Ask the user to hover「聊天」, click the …, choose「按项目整理」 |
 | Collection page is the wrong Project | Ask the user to open the named collection and say「已找到」, or accept long-chat |
